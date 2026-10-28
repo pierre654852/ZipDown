@@ -4,8 +4,8 @@ using System.Text;
 namespace ZipDown.Core
 {
     /// <summary>
-    /// 解壓流程（照 unpack V7）：改名 → 逐一試密碼（先測試、結束代碼 0 才算）→ 解到同名資料夾 →
-    /// 往下解內層 → 內層內容搬到第一層資料夾。
+    /// 解壓流程：改名 → 逐一試密碼（先測試、結束代碼 0 才算）→ 解到同名資料夾 →
+    /// 省略多餘的一層資料夾 → 往下解內層。輸出資料夾已存在就跳過。
     /// </summary>
     public sealed class Unpacker
     {
@@ -14,8 +14,6 @@ namespace ZipDown.Core
 
         readonly Settings _s;
         readonly PasswordBook _book;
-        readonly DoneList _done;
-        readonly RenameJournal _journal;
         readonly IArchiveEngine _engine;
         readonly string _logFile;
         readonly object _logLock = new object();
@@ -30,9 +28,9 @@ namespace ZipDown.Core
 
         public int Renamed, Ok, Skipped, Failed;
 
-        public Unpacker(Settings settings, PasswordBook book, DoneList done, RenameJournal journal, IArchiveEngine engine, string logFile)
+        public Unpacker(Settings settings, PasswordBook book, IArchiveEngine engine, string logFile)
         {
-            _s = settings; _book = book; _done = done; _journal = journal; _engine = engine; _logFile = logFile;
+            _s = settings; _book = book; _engine = engine; _logFile = logFile;
             if (_logFile != null) Directory.CreateDirectory(Path.GetDirectoryName(_logFile));
         }
 
@@ -72,7 +70,7 @@ namespace ZipDown.Core
                     else
                     {
                         var extra = new List<string> { item.WantedPassword, item.NamePassword, item.FolderPassword };
-                        final = await Expand(arc, 1, "[" + n + "/" + todo.Count + "]", null, extra, item, item.RootDir, force);
+                        final = await Expand(arc, 1, "[" + n + "/" + todo.Count + "]", extra, item, item.RootDir, force);
                     }
                 }
                 catch (OperationCanceledException)
@@ -98,6 +96,7 @@ namespace ZipDown.Core
         string ApplyRenames(PlanItem item)
         {
             string primary = null;
+            item.ArchiveFiles.Clear();
             for (int i = 0; i < item.Renames.Count; i++)
             {
                 var r = item.Renames[i];
@@ -118,7 +117,6 @@ namespace ZipDown.Core
                             File.Move(r.From, r.To);
                             now = r.To;
                             Renamed++;
-                            _journal?.Add(r.From, r.To, item.NamePassword);
                             Write(LogLevel.Rename, L.F("log.rename", Rel(item.RootDir, r.From), Path.GetFileName(r.To)));
                         }
                         catch (Exception ex)
@@ -130,6 +128,7 @@ namespace ZipDown.Core
                     }
                 }
                 if (i == 0) primary = now;
+                item.ArchiveFiles.Add(now);
             }
             return primary;
         }
@@ -145,28 +144,19 @@ namespace ZipDown.Core
         /// 解一個壓縮檔（row = 表格上對應的那一列），再往下解內層。
         /// 回傳這一層的結果；內層有失敗就回傳 PartialFail。
         /// </summary>
-        async Task<ItemStatus> Expand(string arc, int depth, string tag, string topOut, IEnumerable<string> extraPw,
+        async Task<ItemStatus> Expand(string arc, int depth, string tag, IEnumerable<string> extraPw,
                                       PlanItem row, string root, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             var rel = Rel(root, arc);
             var leaf = Path.GetFileName(arc);
             var outDir = Path.Combine(Path.GetDirectoryName(arc), NameRules.OutFolderName(leaf));
-            var key = DoneList.Key(arc);
 
             if (Directory.Exists(outDir) || File.Exists(outDir))
             {
                 Write(LogLevel.Skip, L.F("log.skipExists", rel)); Skipped++;
-                if (_done.TryGetPassword(key, out var dp)) Post(() => row.SetResultPassword(dp));
                 return ItemStatus.Skipped;
             }
-            if (_done.Contains(key))
-            {
-                Write(LogLevel.Skip, L.F("log.skipDone", rel)); Skipped++;
-                if (_done.TryGetPassword(key, out var dp)) Post(() => row.SetResultPassword(dp));
-                return ItemStatus.Skipped;
-            }
-            topOut ??= outDir;
 
             Write(LogLevel.Info, L.F("log.processing", tag, rel, Fmt.Size(FamilySize(arc))));
             var sw = Stopwatch.StartNew();
@@ -226,12 +216,12 @@ namespace ZipDown.Core
                 _book.RecordSuccess(used);
                 if (_book.AddIfMissing(used)) Write(LogLevel.Info, L.F("log.pwAdded", used));
             }
-            _done.Mark(arc, used);
+            CollapseSingleFolder(outDir, root);
 
             bool innerFailed = false;
             if (depth < _s.MaxDepth)
             {
-                var scanner = new Scanner(_s.JunkWords, _journal, null);
+                var scanner = new Scanner(_s.JunkWords);
                 var inner = scanner.ScanFolder(outDir, outDir, inner: true);
                 foreach (var sub in inner)
                 {
@@ -248,7 +238,7 @@ namespace ZipDown.Core
                         else
                         {
                             var pws = new List<string> { sub.NamePassword, sub.FolderPassword, used };
-                            st = await Expand(subArc, depth + 1, L.T("log.inner"), topOut, pws, sub, root, ct);
+                            st = await Expand(subArc, depth + 1, L.T("log.inner"), pws, sub, root, ct);
                         }
                     }
                     catch (OperationCanceledException)
@@ -267,7 +257,6 @@ namespace ZipDown.Core
                     if (st.IsFailure()) innerFailed = true;
                 }
             }
-            if (depth > 1 && _s.Flatten) MoveUp(outDir, topOut, root);
             return innerFailed ? ItemStatus.PartialFail : ItemStatus.Done;
         }
 
@@ -291,39 +280,46 @@ namespace ZipDown.Core
             catch { return 0; }
         }
 
-        /// <summary>撞名時加 (2)、(3)…</summary>
-        public static string FreePath(string dir, string name, bool isDir)
-        {
-            var t = Path.Combine(dir, name);
-            if (!File.Exists(t) && !Directory.Exists(t)) return t;
-            string b = isDir ? name : Path.GetFileNameWithoutExtension(name);
-            string e = isDir ? "" : Path.GetExtension(name);
-            for (int k = 2; ; k++)
-            {
-                t = Path.Combine(dir, b + " (" + k + ")" + e);
-                if (!File.Exists(t) && !Directory.Exists(t)) return t;
-            }
-        }
-
-        /// <summary>把 src 裡的東西全部搬到 dst，然後移除 src。</summary>
-        void MoveUp(string src, string dst, string root)
+        /// <summary>
+        /// 智慧解壓：輸出資料夾最上層只有 1 個資料夾、沒有檔案 → 把那個資料夾的內容往上搬一層，刪掉空資料夾。
+        /// 只省一層。
+        /// </summary>
+        void CollapseSingleFolder(string outDir, string root)
         {
             try
             {
-                var tmp = Path.Combine(Path.GetDirectoryName(src), "_zipdown_tmp_" + Guid.NewGuid().ToString("N").Substring(0, 8));
-                Directory.Move(src, tmp);
+                var entries = Directory.EnumerateFileSystemEntries(outDir).ToList();
+                if (entries.Count != 1 || !Directory.Exists(entries[0])) return;
+                var only = entries[0];
+                var name = Path.GetFileName(only);
+                // 先改成暫時名稱，裡面有同名子資料夾時才不會撞名
+                var tmp = Path.Combine(outDir, "_zipdown_tmp_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+                Directory.Move(only, tmp);
                 foreach (var c in Directory.EnumerateFileSystemEntries(tmp).ToList())
                 {
-                    bool isDir = Directory.Exists(c);
-                    var name = Path.GetFileName(c);
-                    var target = FreePath(dst, name, isDir);
-                    if (isDir) Directory.Move(c, target); else File.Move(c, target);
-                    if (Path.GetFileName(target) != name) Write(LogLevel.Skip, L.F("log.moveConflict", Rel(root, target)));
+                    var target = Path.Combine(outDir, Path.GetFileName(c));
+                    if (Directory.Exists(c)) Directory.Move(c, target); else File.Move(c, target);
                 }
-                if (!Directory.EnumerateFileSystemEntries(tmp).Any()) Directory.Delete(tmp);
-                Write(LogLevel.Info, L.F("log.moved", Rel(root, src)));
+                Directory.Delete(tmp);
+                Write(LogLevel.Info, L.F("log.collapsed", name));
             }
-            catch (Exception ex) { Write(LogLevel.Fail, L.F("log.moveFail", Rel(root, src), ex.Message)); }
+            catch (Exception ex) { Write(LogLevel.Fail, L.F("log.collapseFail", Rel(root, outDir), ex.Message)); }
+        }
+
+        /// <summary>
+        /// 「刪除已解壓的原檔」要刪的檔：狀態為「完成」的最外層列，連同它底下狀態為「完成」的內層列，
+        /// 每列的全部分卷。部分失敗／失敗的整組都不刪。
+        /// </summary>
+        public static List<string> FilesToDelete(IList<PlanItem> rows)
+        {
+            var files = new List<string>();
+            foreach (var top in rows.Where(r => r.Depth == 0 && r.Status == ItemStatus.Done))
+            {
+                foreach (var r in rows.Where(r => ReferenceEquals(r, top) || (r.IsDescendantOf(top) && r.Status == ItemStatus.Done)))
+                    foreach (var f in r.ArchiveFiles)
+                        if (File.Exists(f) && !files.Contains(f, StringComparer.OrdinalIgnoreCase)) files.Add(f);
+            }
+            return files;
         }
     }
 }

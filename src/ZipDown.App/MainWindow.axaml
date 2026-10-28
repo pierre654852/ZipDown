@@ -14,7 +14,7 @@
         <Button x:Name="AddFolderBtn" Classes="tool" />
         <Button x:Name="RemoveBtn" Classes="tool" />
         <Button x:Name="ClearBtn" Classes="tool" />
-        <Button x:Name="UndoBtn" Classes="tool" />
+        <Button x:Name="DeleteBtn" Classes="tool" />
         <Border Width="1" Height="26" Background="#55888888" Margin="8,0" VerticalAlignment="Center" />
         <Button x:Name="StartBtn" Classes="tool accent" />
         <Button x:Name="StopBtn" Classes="tool" />

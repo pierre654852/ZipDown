@@ -12,7 +12,7 @@ namespace ZipDown.App
             NameText.Text = L.T("app.title");
             VersionText.Text = L.F("about.version", AppInfo.Version);
             RepoText.Text = AppInfo.RepoUrl;
-            CreditText.Text = L.T("about.credit");
+            CreditText.Text = L.T("about.credit") + "\n" + AppInfo.CreditUrl;
             ChangesLabel.Text = L.T("about.changes");
             ChangesBox.Text = L.T("about.changelog");
             CloseBtn.Content = L.T("about.close");

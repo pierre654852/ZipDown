@@ -13,7 +13,8 @@ namespace ZipDown.App
 
         readonly Settings _s;
         readonly PasswordBook _book;
-        readonly ObservableCollection<string> _pw = new ObservableCollection<string>();
+        readonly List<string> _all = new List<string>();                                     // 完整密碼本（依成功次數排序）
+        readonly ObservableCollection<string> _shown = new ObservableCollection<string>();  // 篩選後顯示的
 
         // 給 XAML 設計工具用
         public SettingsWindow() : this(new Settings(), null) { }
@@ -31,7 +32,6 @@ namespace ZipDown.App
             WrBrowse.Content = L.T("set.browse");
             PwLabel.Text = L.T("set.passwords");
             DepthLabel.Text = L.T("set.maxDepth");
-            FlattenBox.Content = L.T("set.flatten");
             JunkLabel.Text = L.T("set.junk");
             LangLabel.Text = L.T("set.language");
             OkBtn.Content = L.T("set.ok");
@@ -40,8 +40,10 @@ namespace ZipDown.App
             BzBox.Text = s.BandizipPath;
             WrBox.Text = s.WinRARPath;
             // 依成功次數排序（也是嘗試順序），不顯示次數
-            if (book != null) foreach (var p in book.Ordered()) _pw.Add(p);
-            PwList.ItemsSource = _pw;
+            if (book != null) _all.AddRange(book.Ordered());
+            PwList.ItemsSource = _shown;
+            RefreshList();
+            NewPwBox.TextChanged += (_, _) => RefreshList();   // 打字時即時篩選
             NewPwBox.Watermark = L.T("set.newPw");
             AddPwBtn.Content = L.T("set.add");
             DelPwBtn.Content = L.T("set.delete");
@@ -49,10 +51,10 @@ namespace ZipDown.App
             NewPwBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { AddPassword(); e.Handled = true; } };
             DelPwBtn.Click += (_, _) =>
             {
-                foreach (var p in PwList.SelectedItems.Cast<string>().ToList()) _pw.Remove(p);
+                foreach (var p in PwList.SelectedItems.Cast<string>().ToList()) _all.Remove(p);
+                RefreshList();
             };
             DepthBox.Value = s.MaxDepth;
-            FlattenBox.IsChecked = s.Flatten;
             JunkBox.Text = string.Join("|", s.JunkWords);
             LangBox.ItemsSource = new[] { L.T("lang.system"), "繁體中文", "简体中文", "English" };
             LangBox.SelectedIndex = Math.Max(0, Array.IndexOf(LangKeys, s.Language ?? ""));
@@ -63,12 +65,22 @@ namespace ZipDown.App
             OkBtn.Click += (_, _) => { Apply(); Close(true); };
         }
 
+        /// <summary>只顯示含有輸入框文字的密碼（不分大小寫）；輸入框空白就全部顯示。</summary>
+        void RefreshList()
+        {
+            var q = (NewPwBox.Text ?? "").Trim();
+            _shown.Clear();
+            foreach (var p in _all)
+                if (q.Length == 0 || p.Contains(q, StringComparison.OrdinalIgnoreCase)) _shown.Add(p);
+        }
+
         void AddPassword()
         {
             var p = (NewPwBox.Text ?? "").Trim();
             if (p.Length == 0) return;
-            if (!_pw.Contains(p)) _pw.Add(p);   // 新的排最後（成功過才會往前）
-            NewPwBox.Text = "";
+            if (!_all.Contains(p)) _all.Add(p);   // 新的排最後（成功過才會往前）
+            NewPwBox.Text = "";                   // 會觸發 RefreshList，清單回到全部
+            RefreshList();
             PwList.ScrollIntoView(p);
         }
 
@@ -88,11 +100,9 @@ namespace ZipDown.App
             _s.BandizipPath = (BzBox.Text ?? "").Trim().Trim('"');
             _s.WinRARPath = (WrBox.Text ?? "").Trim().Trim('"');
             _s.MaxDepth = (int)Math.Max(1, Math.Min(10, DepthBox.Value ?? 3));
-            _s.Flatten = FlattenBox.IsChecked == true;
             _s.JunkWords = (JunkBox.Text ?? "").Split('|').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
             _s.Language = LangKeys[Math.Max(0, LangBox.SelectedIndex)];
-            AddPassword();   // 輸入欄裡打了沒按新增，也一併存
-            _book?.SetPasswords(_pw);
+            _book?.SetPasswords(_all);   // 輸入框裡只是拿來搜尋的字，沒按「新增」就不存
         }
     }
 }

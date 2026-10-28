@@ -41,7 +41,6 @@
                        FormatString="0" Width="130" />
       </Grid>
 
-      <CheckBox x:Name="FlattenBox" Grid.Row="7" Margin="0,0,0,10" />
 
       <StackPanel Grid.Row="8" Margin="0,0,0,10">
         <TextBlock x:Name="JunkLabel" Margin="0,0,0,4" />

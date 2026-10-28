@@ -15,7 +15,6 @@ namespace ZipDown.Core
         public string BandizipPath = "";
         public string WinRARPath = "";
         public int MaxDepth = 3;
-        public bool Flatten = true;
         public List<string> JunkWords = new List<string> { "删", "刪" };
         public string LastFolder = "";
 
@@ -42,7 +41,6 @@ namespace ZipDown.Core
                     case "bandizippath": s.BandizipPath = v; break;
                     case "winrarpath": s.WinRARPath = v; break;
                     case "maxdepth": if (int.TryParse(v, out var d)) s.MaxDepth = Math.Max(1, Math.Min(10, d)); break;
-                    case "flatten": s.Flatten = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                     case "junkwords": s.JunkWords = v.Split('|').Select(x => x.Trim()).Where(x => x.Length > 0).ToList(); break;
                     case "lastfolder": s.LastFolder = v; break;
                 }
@@ -59,7 +57,6 @@ namespace ZipDown.Core
             sb.AppendLine("BandizipPath=" + BandizipPath);
             sb.AppendLine("WinRARPath=" + WinRARPath);
             sb.AppendLine("MaxDepth=" + MaxDepth.ToString(CultureInfo.InvariantCulture));
-            sb.AppendLine("Flatten=" + (Flatten ? "true" : "false"));
             sb.AppendLine("JunkWords=" + string.Join("|", JunkWords));
             sb.AppendLine("LastFolder=" + LastFolder);
             File.WriteAllText(FilePath, sb.ToString(), new UTF8Encoding(true));

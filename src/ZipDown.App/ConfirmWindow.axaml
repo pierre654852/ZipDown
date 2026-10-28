@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZipDown.App.ConfirmWindow"
+        Width="440" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="18" Spacing="16">
+    <TextBlock x:Name="MessageText" TextWrapping="Wrap" FontSize="14" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="OkBtn" Classes="accent" MinWidth="90" HorizontalContentAlignment="Center" />
+      <Button x:Name="CancelBtn" MinWidth="90" HorizontalContentAlignment="Center" IsDefault="True" />
+    </StackPanel>
+  </StackPanel>
+</Window>

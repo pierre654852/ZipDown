@@ -6,8 +6,6 @@ namespace ZipDown.Core
     public sealed class Scanner
     {
         readonly IList<string> _junk;
-        readonly RenameJournal _journal;
-        readonly DoneList _done;
 
         static readonly EnumerationOptions Recursive = new EnumerationOptions
         {
@@ -16,11 +14,9 @@ namespace ZipDown.Core
             AttributesToSkip = FileAttributes.System,
         };
 
-        public Scanner(IList<string> junkWords, RenameJournal journal = null, DoneList done = null)
+        public Scanner(IList<string> junkWords)
         {
             _junk = junkWords ?? new List<string>();
-            _journal = journal;
-            _done = done;
         }
 
         /// <summary>使用者加入的東西：檔案或資料夾。</summary>
@@ -81,15 +77,6 @@ namespace ZipDown.Core
                     item.RootDir = rootDir;
                     item.FolderPassword = FolderPassword(g.Key, rootDir);
                     item.Password = item.NamePassword ?? item.FolderPassword;
-                    if (_done != null)
-                    {
-                        var key = DoneList.Key(Len(e.Path), item.NewName);   // 完成清單記的是主卷本身的大小
-                        if (_done.Contains(key))
-                        {
-                            item.Status = ItemStatus.AlreadyDone;
-                            if (_done.TryGetPassword(key, out var dpw)) item.SetResultPassword(dpw);
-                        }
-                    }
                     result.Add(item);
                 }
             }
@@ -109,7 +96,7 @@ namespace ZipDown.Core
                 OriginalName = e.Name,
                 NewName = info.Clean,
                 Kind = Sniffer.KindFromExt(info.TokenExt),
-                NamePassword = info.Password ?? _journal?.PasswordFor(e.Path),
+                NamePassword = info.Password,
             };
             item.Renames.Add(new FileRename(e.Path, Sibling(e.Path, info.Clean)));
             long size = Len(e.Path);
@@ -156,7 +143,6 @@ namespace ZipDown.Core
                 NewName = newName,
                 Kind = kind,
                 Size = Len(e.Path),
-                NamePassword = _journal?.PasswordFor(e.Path),
             };
             item.Renames.Add(new FileRename(e.Path, Sibling(e.Path, newName)));
             return item;

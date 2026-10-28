@@ -94,7 +94,7 @@ namespace ZipDown.Core.Tests
         static Settings S(string dir) => new Settings { FilePath = Path.Combine(dir, "settings.ini") };
 
         [Fact]
-        public async Task NestedArchive_FlattensToTop_AndRemembers()
+        public async Task Nested_CollapsesSingleFolder_AndSkipsExistingOutput()
         {
             using var t = new TempDir();
             var app = t.P("app"); Directory.CreateDirectory(app);
@@ -104,45 +104,60 @@ namespace ZipDown.Core.Tests
             var eng = new FakeEngine();
             eng.Passwords["outer.7z"] = "right";
             eng.Contents["outer.7z"] = new() { ["readme.txt"] = Pad(5), ["inner"] = Fake7z() };
-            eng.Contents["inner.7z"] = new() { ["readme.txt"] = Pad(7), ["pic.png"] = Pad(9) };
+            // inner.7z 裡本身包了一層 inner 資料夾 → 應該被省略
+            eng.Contents["inner.7z"] = new() { [Path.Combine("inner", "pic.png")] = Pad(9), [Path.Combine("inner", "sub", "a.txt")] = Pad(3) };
 
             var book = new PasswordBook(app);
             book.SetPasswords(new[] { "wrong1", "right" });
-            var done = new DoneList(app);
-            var journal = new RenameJournal(app);
-            var items = new Scanner(new List<string>(), journal, done).ScanPath(work);
+            var items = new Scanner(new List<string>()).ScanPath(work);
             var item = Assert.Single(items);
+            var rows = new List<PlanItem>(items);
 
-            var u = new Unpacker(S(app), book, done, journal, eng, Path.Combine(app, "log.txt"));
+            var u = new Unpacker(S(app), book, eng, Path.Combine(app, "log.txt")) { ChildAdded = (p, c) => rows.Add(c) };
             await u.RunAsync(items, CancellationToken.None);
 
             Assert.Equal(ItemStatus.Done, item.Status);
-            Assert.Equal("right", item.Password);                               // 顯示實際用到的密碼
+            Assert.Equal("right", item.Password);                                           // 顯示實際用到的密碼
             var top = Path.Combine(work, "outer");
-            Assert.True(File.Exists(Path.Combine(top, "inner.7z")));            // 中間層壓縮檔保留
+            Assert.True(File.Exists(Path.Combine(top, "inner.7z")));                        // 中間層壓縮檔保留
             Assert.True(File.Exists(Path.Combine(top, "readme.txt")));
-            Assert.True(File.Exists(Path.Combine(top, "readme (2).txt")));      // 撞名加 (2)
-            Assert.True(File.Exists(Path.Combine(top, "pic.png")));             // 內層搬到第一層
-            Assert.False(Directory.Exists(Path.Combine(top, "inner")));
+            Assert.True(File.Exists(Path.Combine(top, "inner", "pic.png")));                // inner\inner 省掉一層
+            Assert.True(File.Exists(Path.Combine(top, "inner", "sub", "a.txt")));           // 只省一層
+            Assert.False(Directory.Exists(Path.Combine(top, "inner", "inner")));
             Assert.Equal(1, book.SuccessCount("right"));
             Assert.Equal(2, u.Ok);
-            Assert.Equal(2, u.Renamed);                                          // outer.7z.jpg、inner
+            Assert.Equal(2, u.Renamed);                                                      // outer.7z.jpg、inner
 
-            // 第二次跑：清單上已解過
-            Directory.Delete(top, true);
-            var again = new Scanner(new List<string>(), journal, done).ScanPath(work);
-            var a1 = Assert.Single(again);
-            Assert.Equal(ItemStatus.AlreadyDone, a1.Status);
-            Assert.Equal("right", a1.Password);                                 // 完成清單帶出密碼
-            var u2 = new Unpacker(S(app), book, done, journal, eng, null);
+            // 刪除原檔：外層＋內層中間壓縮檔
+            var del = Unpacker.FilesToDelete(rows).Select(Path.GetFileName).OrderBy(x => x).ToList();
+            Assert.Equal(new[] { "inner.7z", "outer.7z" }, del);
+
+            // 輸出資料夾還在 → 跳過
+            var again = new Scanner(null).ScanPath(work);
+            var u2 = new Unpacker(S(app), book, eng, null);
             await u2.RunAsync(again, CancellationToken.None);
+            Assert.Equal(ItemStatus.Skipped, again[0].Status);
             Assert.Equal(0, u2.Ok);
-            Assert.Equal(1, u2.Skipped);
 
-            // 復原改名
-            var (ok, _) = journal.UndoAll(null);
-            Assert.True(ok >= 1);
-            Assert.True(File.Exists(Path.Combine(work, "outer.7z.jpg")));
+            // 輸出資料夾刪掉 → 重新解
+            Directory.Delete(top, true);
+            var third = new Scanner(null).ScanPath(work);
+            var u3 = new Unpacker(S(app), book, eng, null);
+            await u3.RunAsync(third, CancellationToken.None);
+            Assert.Equal(ItemStatus.Done, third[0].Status);
+        }
+
+        [Fact]
+        public async Task Collapse_NotWhenFilesBesideFolder()
+        {
+            using var t = new TempDir();
+            var app = t.P("app"); Directory.CreateDirectory(app);
+            t.Write(Path.Combine("work", "x.zip"), FakeZip());
+            var eng = new FakeEngine();
+            eng.Contents["x.zip"] = new() { [Path.Combine("d", "a.txt")] = Pad(3), ["b.txt"] = Pad(2) };
+            var items = new Scanner(null).ScanPath(t.P("work"));
+            await new Unpacker(S(app), new PasswordBook(app), eng, null).RunAsync(items, CancellationToken.None);
+            Assert.True(File.Exists(t.P("work", "x", "d", "a.txt")));
         }
 
         [Fact]
@@ -156,7 +171,7 @@ namespace ZipDown.Core.Tests
             var book = new PasswordBook(app);
             book.SetPasswords(new[] { "a", "b" });
             var items = new Scanner(null).ScanPath(t.P("work"));
-            var u = new Unpacker(S(app), book, new DoneList(app), new RenameJournal(app), eng, null);
+            var u = new Unpacker(S(app), book, eng, null);
             await u.RunAsync(items, CancellationToken.None);
             Assert.Equal(ItemStatus.WrongPassword, items[0].Status);
             Assert.False(Directory.Exists(t.P("work", "x")));
@@ -174,7 +189,7 @@ namespace ZipDown.Core.Tests
             var book = new PasswordBook(app);
             book.SetPasswords(new[] { "a" });
             var items = new Scanner(null).ScanPath(t.P("work"));
-            var u = new Unpacker(S(app), book, new DoneList(app), new RenameJournal(app), eng, null);
+            var u = new Unpacker(S(app), book, eng, null);
             await u.RunAsync(items, CancellationToken.None);
             Assert.Equal(ItemStatus.Done, items[0].Status);
             Assert.Equal(new[] { "y.zip:" + Unpacker.NoPasswordProbe, "y.zip:abc" }, eng.Tested);
@@ -190,7 +205,7 @@ namespace ZipDown.Core.Tests
             var eng = new FakeEngine();
             eng.Damaged.Add("z.zip");
             var items = new Scanner(null).ScanPath(t.P("work"));
-            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null);
+            var u = new Unpacker(S(app), new PasswordBook(app), eng, null);
             await u.RunAsync(items, CancellationToken.None);
             Assert.Equal(ItemStatus.Damaged, items[0].Status);
         }
@@ -206,7 +221,7 @@ namespace ZipDown.Core.Tests
             eng.Passwords["b.zip"] = "nope";
             var items = new Scanner(null).ScanPath(t.P("work"));
             var children = new List<PlanItem>();
-            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null)
+            var u = new Unpacker(S(app), new PasswordBook(app), eng, null)
             {
                 ChildAdded = (parent, child) => children.Add(child),
             };
@@ -218,6 +233,7 @@ namespace ZipDown.Core.Tests
             Assert.Equal(ItemStatus.Done, children.Single(c => c.OriginalName == "a.7z").Status);
             Assert.Equal(ItemStatus.WrongPassword, children.Single(c => c.OriginalName == "b.zip").Status);
             Assert.Equal("\u3000└ a.7z", children[0].DisplayName);
+            Assert.Empty(Unpacker.FilesToDelete(items.Concat(children).ToList()));          // 部分失敗整組不刪
         }
 
         [Fact]
@@ -227,32 +243,9 @@ namespace ZipDown.Core.Tests
             var app = t.P("app"); Directory.CreateDirectory(app);
             var item = new PlanItem { Dir = t.Path, RootDir = t.Path, OriginalName = "x.zip", NewName = "x.zip", Status = ItemStatus.Done };
             var eng = new FakeEngine();
-            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null);
+            var u = new Unpacker(S(app), new PasswordBook(app), eng, null);
             await u.RunAsync(new[] { item }, CancellationToken.None);
             Assert.Empty(eng.Tested);
-        }
-    }
-
-    public class DoneListTests
-    {
-        [Fact]
-        public void RemembersPassword_AndReadsOldFormat()
-        {
-            using var t = new TempDir();
-            File.WriteAllText(t.P("done_list.txt"), "10|old.zip\r\n");
-            var a = t.Write("a.zip", new byte[5]);
-            var b = t.Write("b.zip", new byte[6]);
-            var d = new DoneList(t.Path);
-            d.Mark(a, "pw1");
-            d.Mark(b, null);
-
-            var again = new DoneList(t.Path);
-            Assert.True(again.Contains("10|old.zip"));
-            Assert.False(again.TryGetPassword("10|old.zip", out _));
-            Assert.True(again.TryGetPassword(DoneList.Key(a), out var pa));
-            Assert.Equal("pw1", pa);
-            Assert.True(again.TryGetPassword(DoneList.Key(b), out var pb));
-            Assert.Null(pb);
         }
     }
 }

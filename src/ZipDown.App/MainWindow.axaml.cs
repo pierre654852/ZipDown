@@ -26,12 +26,9 @@ namespace ZipDown.App
         readonly ObservableCollection<PlanItem> _items = new ObservableCollection<PlanItem>();
         readonly ObservableCollection<LogLine> _log = new ObservableCollection<LogLine>();
         readonly HashSet<string> _known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        readonly List<string> _sources = new List<string>();
 
         readonly Settings _settings;
         readonly PasswordBook _book;
-        readonly DoneList _done;
-        readonly RenameJournal _journal;
 
         bool _running, _busy;
         int _stopPresses;
@@ -48,8 +45,6 @@ namespace ZipDown.App
 
             _settings = Settings.Load();
             _book = new PasswordBook();
-            _done = new DoneList(Settings.AppDir);
-            _journal = new RenameJournal(Settings.AppDir);
             L.Set(_settings.Language);
 
             BuildColumns();
@@ -73,8 +68,8 @@ namespace ZipDown.App
                 var sel = TaskGrid.SelectedItems.Cast<PlanItem>().ToList();
                 foreach (var it in _items.Where(x => sel.Contains(x) || sel.Any(x.IsDescendantOf)).ToList()) RemoveRow(it);
             };
-            ClearBtn.Click += (_, _) => { _items.Clear(); _known.Clear(); _sources.Clear(); };
-            UndoBtn.Click += OnUndo;
+            ClearBtn.Click += (_, _) => { _items.Clear(); _known.Clear(); };
+            DeleteBtn.Click += OnDeleteDone;
             StartBtn.Click += OnStart;
             StopBtn.Click += OnStop;
             SettingsBtn.Click += OnSettings;
@@ -177,7 +172,7 @@ namespace ZipDown.App
             AddFolderBtn.Content = L.T("ui.addFolder");
             RemoveBtn.Content = L.T("ui.remove");
             ClearBtn.Content = L.T("ui.clear");
-            UndoBtn.Content = L.T("ui.undo");
+            DeleteBtn.Content = L.T("ui.deleteDone");
             StartBtn.Content = L.T("ui.start");
             StopBtn.Content = _stopPresses > 0 ? L.T("ui.forceStop") : L.T("ui.stop");
             SettingsBtn.Content = L.T("ui.settings");
@@ -202,7 +197,7 @@ namespace ZipDown.App
             AddFolderBtn.IsEnabled = idle;
             RemoveBtn.IsEnabled = idle;
             ClearBtn.IsEnabled = idle;
-            UndoBtn.IsEnabled = idle;
+            DeleteBtn.IsEnabled = idle && _items.Any(i => i.Status == ItemStatus.Done);
             SettingsBtn.IsEnabled = idle;
             StartBtn.IsEnabled = idle && _items.Count > 0;
             StopBtn.IsEnabled = _running && _stopPresses < 2;
@@ -283,13 +278,13 @@ namespace ZipDown.App
             await AddPaths(items.Select(i => i.TryGetLocalPath()).Where(p => p != null).ToList());
         }
 
-        async Task AddPaths(IList<string> paths, bool remember = true)
+        async Task AddPaths(IList<string> paths)
         {
             if (paths.Count == 0) return;
             _busy = true; UpdateState();
             try
             {
-                var scanner = new Scanner(_settings.JunkWords, _journal, _done);
+                var scanner = new Scanner(_settings.JunkWords);
                 int added = 0;
                 foreach (var p in paths)
                 {
@@ -299,12 +294,11 @@ namespace ZipDown.App
                     catch (Exception ex) { AddLog(LogLevel.Fail, L.F("log.error", p, ex.Message)); continue; }
                     foreach (var it in found)
                         if (!IsKnown(it)) { AddRow(it); added++; }
-                    if (remember && !_sources.Contains(p, StringComparer.OrdinalIgnoreCase)) _sources.Add(p);
                 }
                 AddLog(LogLevel.Info, L.F("ui.scanned", added));
 
                 var last = Directory.Exists(paths[0]) ? paths[0] : Path.GetDirectoryName(paths[0]);
-                if (remember && last != null && last != _settings.LastFolder) { _settings.LastFolder = last; TrySaveSettings(); }
+                if (last != null && last != _settings.LastFolder) { _settings.LastFolder = last; TrySaveSettings(); }
             }
             finally { _busy = false; UpdateState(); }
         }
@@ -328,7 +322,7 @@ namespace ZipDown.App
             _timer.Start();
 
             var logFile = Path.Combine(Settings.AppDir, "logs", "ZipDown_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt");
-            _unpacker = new Unpacker(_settings, _book, _done, _journal, engine, logFile)
+            _unpacker = new Unpacker(_settings, _book, engine, logFile)
             {
                 Post = a => Dispatcher.UIThread.Post(a),
             };
@@ -373,23 +367,35 @@ namespace ZipDown.App
             UpdateState();
         }
 
-        // ---------------- 復原改名 ----------------
+        // ---------------- 刪除已解壓的原檔 ----------------
 
-        async void OnUndo(object sender, RoutedEventArgs e)
+        async void OnDeleteDone(object sender, RoutedEventArgs e)
         {
-            if (_journal.Count == 0) { AddLog(LogLevel.Info, L.T("log.undoNone")); return; }
-            _busy = true; UpdateState();
-            try
-            {
-                var (ok, skip) = await Task.Run(() => _journal.UndoAll(PostLog));
-                AddLog(LogLevel.Info, L.F("log.undoSummary", ok, skip));
-            }
-            finally { _busy = false; UpdateState(); }
+            if (_running || _busy) return;
+            var files = Unpacker.FilesToDelete(_items);
+            if (files.Count == 0) { AddLog(LogLevel.Info, L.T("del.none")); return; }
+            if (!OperatingSystem.IsWindows()) { AddLog(LogLevel.Fail, L.T("del.unsupported")); return; }
 
-            // 檔名變回去了，重新掃描表格
-            var src = _sources.ToList();
-            _items.Clear(); _known.Clear();
-            await AddPaths(src, remember: false);
+            // 連續確認兩次
+            if (!await ConfirmWindow.Ask(this, L.F("del.confirm1", files.Count))) return;
+            if (!await ConfirmWindow.Ask(this, L.F("del.confirm2", files.Count))) return;
+
+            int ok = 0, fail = 0;
+            foreach (var f in files)
+            {
+                try
+                {
+                    Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(f,
+                        Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                        Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                    ok++;
+                    AddLog(LogLevel.Rename, L.F("del.ok", f));
+                }
+                catch (Exception ex) { fail++; AddLog(LogLevel.Fail, L.F("del.fail", f, ex.Message)); }
+            }
+            foreach (var it in _items) it.ArchiveFiles.RemoveAll(f => !File.Exists(f));
+            AddLog(LogLevel.Info, L.F("del.summary", ok, fail));
+            UpdateState();
         }
 
         // ---------------- 設定 ----------------

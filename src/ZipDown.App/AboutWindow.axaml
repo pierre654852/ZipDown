@@ -10,7 +10,7 @@
       <TextBlock x:Name="NameText" FontSize="22" FontWeight="SemiBold" />
       <TextBlock x:Name="VersionText" Opacity="0.8" />
       <SelectableTextBlock x:Name="RepoText" Opacity="0.8" />
-      <TextBlock x:Name="CreditText" Opacity="0.8" />
+      <SelectableTextBlock x:Name="CreditText" Opacity="0.8" TextWrapping="Wrap" />
       <TextBlock Text="MIT License" Opacity="0.8" />
     </StackPanel>
     <TextBlock x:Name="ChangesLabel" DockPanel.Dock="Top" FontWeight="SemiBold" Margin="0,0,0,4" />
