@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZipDown.App.AboutWindow"
+        Width="560" Height="460" MinWidth="420" MinHeight="360"
+        WindowStartupLocation="CenterOwner">
+  <DockPanel Margin="16">
+    <Button x:Name="CloseBtn" DockPanel.Dock="Bottom" HorizontalAlignment="Right" MinWidth="90"
+            HorizontalContentAlignment="Center" Margin="0,12,0,0" />
+    <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,12">
+      <TextBlock x:Name="NameText" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock x:Name="VersionText" Opacity="0.8" />
+      <SelectableTextBlock x:Name="RepoText" Opacity="0.8" />
+      <TextBlock x:Name="CreditText" Opacity="0.8" />
+      <TextBlock Text="MIT License" Opacity="0.8" />
+    </StackPanel>
+    <TextBlock x:Name="ChangesLabel" DockPanel.Dock="Top" FontWeight="SemiBold" Margin="0,0,0,4" />
+    <TextBox x:Name="ChangesBox" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+             VerticalContentAlignment="Top" />
+  </DockPanel>
+</Window>

@@ -1,0 +1,49 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ZipDown.App.SettingsWindow"
+        Width="640" Height="640" MinWidth="520" MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+  <DockPanel Margin="14">
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+      <Button x:Name="OkBtn" Classes="accent" MinWidth="90" HorizontalContentAlignment="Center" />
+      <Button x:Name="CancelBtn" MinWidth="90" HorizontalContentAlignment="Center" />
+    </StackPanel>
+
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto" ColumnDefinitions="*">
+      <TextBlock x:Name="BzLabel" Grid.Row="0" Margin="0,0,0,4" />
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,0,0,10">
+        <TextBox x:Name="BzBox" />
+        <Button x:Name="BzBrowse" Grid.Column="1" Margin="6,0,0,0" />
+      </Grid>
+
+      <TextBlock x:Name="WrLabel" Grid.Row="2" Margin="0,0,0,4" />
+      <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,0,0,10">
+        <TextBox x:Name="WrBox" />
+        <Button x:Name="WrBrowse" Grid.Column="1" Margin="6,0,0,0" />
+      </Grid>
+
+      <TextBlock x:Name="PwLabel" Grid.Row="4" Margin="0,0,0,4" />
+      <TextBox x:Name="PwBox" Grid.Row="5" AcceptsReturn="True" TextWrapping="NoWrap"
+               VerticalContentAlignment="Top" MinHeight="120" Margin="0,0,0,10" />
+
+      <Grid Grid.Row="6" ColumnDefinitions="Auto,Auto" Margin="0,0,0,10">
+        <TextBlock x:Name="DepthLabel" VerticalAlignment="Center" Margin="0,0,10,0" />
+        <NumericUpDown x:Name="DepthBox" Grid.Column="1" Minimum="1" Maximum="10" Increment="1"
+                       FormatString="0" Width="130" />
+      </Grid>
+
+      <CheckBox x:Name="FlattenBox" Grid.Row="7" Margin="0,0,0,10" />
+
+      <StackPanel Grid.Row="8" Margin="0,0,0,10">
+        <TextBlock x:Name="JunkLabel" Margin="0,0,0,4" />
+        <TextBox x:Name="JunkBox" />
+      </StackPanel>
+
+      <Grid Grid.Row="9" ColumnDefinitions="Auto,Auto">
+        <TextBlock x:Name="LangLabel" VerticalAlignment="Center" Margin="0,0,10,0" />
+        <ComboBox x:Name="LangBox" Grid.Column="1" Width="160" />
+      </Grid>
+    </Grid>
+  </DockPanel>
+</Window>
