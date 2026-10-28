@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
 using Avalonia.Data;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -38,7 +39,8 @@ namespace ZipDown.App
         CancellationTokenSource _cts;
         readonly DispatcherTimer _timer;
 
-        DataGridTextColumn _cOrig, _cNew, _cSize, _cPw, _cStatus, _cTime, _cDir;
+        DataGridTextColumn _cOrig, _cSize, _cPw, _cStatus, _cTime;
+        DataGridTemplateColumn _cDir;
 
         public MainWindow()
         {
@@ -68,7 +70,8 @@ namespace ZipDown.App
             AddFolderBtn.Click += OnAddFolder;
             RemoveBtn.Click += (_, _) =>
             {
-                foreach (var it in TaskGrid.SelectedItems.Cast<PlanItem>().ToList()) { _items.Remove(it); _known.Remove(it.OriginalPath); }
+                var sel = TaskGrid.SelectedItems.Cast<PlanItem>().ToList();
+                foreach (var it in _items.Where(x => sel.Contains(x) || sel.Any(x.IsDescendantOf)).ToList()) RemoveRow(it);
             };
             ClearBtn.Click += (_, _) => { _items.Clear(); _known.Clear(); _sources.Clear(); };
             UndoBtn.Click += OnUndo;
@@ -106,13 +109,61 @@ namespace ZipDown.App
                 TaskGrid.Columns.Add(c);
                 return c;
             }
-            _cOrig = Col(nameof(PlanItem.OriginalName), 3);
-            _cNew = Col(nameof(PlanItem.RenamedDisplay), 2.2);
+            _cOrig = Col(nameof(PlanItem.DisplayName), 3);
             _cSize = Col(nameof(PlanItem.SizeText), 0.8);
             _cPw = Col(nameof(PlanItem.Password), 1.2, readOnly: false, mode: BindingMode.TwoWay);
-            _cStatus = Col(nameof(PlanItem.StatusText), 1);
+            _cStatus = Col(nameof(PlanItem.StatusText), 1.1);
             _cTime = Col(nameof(PlanItem.ElapsedText), 0.9);
-            _cDir = Col(nameof(PlanItem.Location), 2);
+
+            // 位置：完整路徑，太長被截掉時滑鼠停著看全文
+            _cDir = new DataGridTemplateColumn
+            {
+                IsReadOnly = true,
+                Width = new DataGridLength(3, DataGridLengthUnitType.Star),
+                CellTemplate = new FuncDataTemplate<PlanItem>((_, _) => new TextBlock
+                {
+                    [!TextBlock.TextProperty] = new Binding(nameof(PlanItem.Location)),
+                    [!ToolTip.TipProperty] = new Binding(nameof(PlanItem.Location)),
+                    TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    Margin = new Avalonia.Thickness(12, 0, 4, 0),
+                }),
+            };
+            TaskGrid.Columns.Add(_cDir);
+        }
+
+        // ---------------- 列 ----------------
+
+        static IEnumerable<string> Keys(PlanItem it)
+        {
+            yield return it.OriginalPath;
+            yield return it.ArchivePath;
+        }
+
+        /// <summary>原檔名或改名後的檔名已經在表格裡 → 同一個檔。</summary>
+        bool IsKnown(PlanItem it) => Keys(it).Any(_known.Contains);
+
+        void AddRow(PlanItem it)
+        {
+            foreach (var k in Keys(it)) _known.Add(k);
+            _items.Add(it);
+        }
+
+        void RemoveRow(PlanItem it)
+        {
+            _items.Remove(it);
+            foreach (var k in Keys(it)) _known.Remove(k);
+        }
+
+        /// <summary>內層壓縮檔：插在父列（和父列已有的子列）後面。</summary>
+        void InsertChild(PlanItem parent, PlanItem child)
+        {
+            int i = _items.IndexOf(parent);
+            if (i < 0) { AddRow(child); return; }
+            i++;
+            while (i < _items.Count && _items[i].IsDescendantOf(parent)) i++;
+            foreach (var k in Keys(child)) _known.Add(k);
+            _items.Insert(i, child);
         }
 
         void ApplyLanguage()
@@ -134,7 +185,6 @@ namespace ZipDown.App
             DropHint.Text = L.T("ui.dropHint");
 
             _cOrig.Header = L.T("col.original");
-            _cNew.Header = L.T("col.renamed");
             _cSize.Header = L.T("col.size");
             _cPw.Header = L.T("col.password");
             _cStatus.Header = L.T("col.status");
@@ -248,7 +298,7 @@ namespace ZipDown.App
                     try { found = await Task.Run(() => scanner.ScanPath(p)); }
                     catch (Exception ex) { AddLog(LogLevel.Fail, L.F("log.error", p, ex.Message)); continue; }
                     foreach (var it in found)
-                        if (_known.Add(it.OriginalPath)) { _items.Add(it); added++; }
+                        if (!IsKnown(it)) { AddRow(it); added++; }
                     if (remember && !_sources.Contains(p, StringComparer.OrdinalIgnoreCase)) _sources.Add(p);
                 }
                 AddLog(LogLevel.Info, L.F("ui.scanned", added));
@@ -265,6 +315,8 @@ namespace ZipDown.App
         {
             if (_running || _items.Count == 0) return;
             TaskGrid.CommitEdit();
+            var todo = Unpacker.Todo(_items);
+            if (todo.Count == 0) { AddLog(LogLevel.Skip, L.T("log.nothing")); return; }
             var engine = EngineLocator.Create(_settings);
             if (engine == null) { AddLog(LogLevel.Fail, L.T("log.noEngine")); return; }
 
@@ -281,7 +333,11 @@ namespace ZipDown.App
                 Post = a => Dispatcher.UIThread.Post(a),
             };
             _unpacker.Log += PostLog;
-            var list = _items.ToList();
+            _unpacker.ChildAdded = InsertChild;   // Unpacker 會透過 Post 在畫面執行緒呼叫
+
+            // 要重跑的列：先清掉上次留下的子列
+            foreach (var old in _items.Where(x => todo.Any(x.IsDescendantOf)).ToList()) RemoveRow(old);
+            var list = todo;
             var token = _cts.Token;
             try
             {

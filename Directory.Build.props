@@ -4,7 +4,7 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>pierre654852</Authors>
     <Product>ZipDown</Product>
     <Copyright>Copyright (c) 2026 pierre654852</Copyright>

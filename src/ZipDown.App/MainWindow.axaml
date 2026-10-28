@@ -30,7 +30,7 @@
                   AutoGenerateColumns="False"
                   CanUserResizeColumns="True"
                   CanUserReorderColumns="False"
-                  CanUserSortColumns="True"
+                  CanUserSortColumns="False"
                   SelectionMode="Extended"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column" />

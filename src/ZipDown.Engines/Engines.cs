@@ -53,6 +53,8 @@ namespace ZipDown.Engines
 
         public Task<int> ExtractAsync(string archive, string password, string outDir, CancellationToken ct) =>
             ProcessRunner.RunAsync(ExePath, new[] { "x", "-y", "-aos", "-o:" + outDir, "-p:" + password, archive }, null, ct);
+
+        public bool IsWrongPassword(int exitCode) => exitCode == 14;
     }
 
     /// <summary>WinRAR.exe（背景模式）。官方文件：密碼錯 11、成功 0（尚未實測）。</summary>
@@ -68,6 +70,8 @@ namespace ZipDown.Engines
         // 跟 V7 一樣：解到工作目錄
         public Task<int> ExtractAsync(string archive, string password, string outDir, CancellationToken ct) =>
             ProcessRunner.RunAsync(ExePath, new[] { "x", "-ibck", "-inul", "-y", "-o-", "-p" + password, archive }, outDir, ct);
+
+        public bool IsWrongPassword(int exitCode) => exitCode == 11;
     }
 
     public static class EngineLocator

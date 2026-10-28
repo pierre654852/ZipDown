@@ -10,11 +10,19 @@ namespace ZipDown.Core
         string ExePath { get; }
         Task<int> TestAsync(string archive, string password, CancellationToken ct);
         Task<int> ExtractAsync(string archive, string password, string outDir, CancellationToken ct);
+        /// <summary>這個結束代碼是不是「密碼錯誤」。</summary>
+        bool IsWrongPassword(int exitCode);
     }
 
     public enum LogLevel { Info, Success, Fail, Skip, Rename, Detail }
 
-    public enum ItemStatus { Pending, AlreadyDone, Testing, Extracting, Done, Skipped, Failed, Stopped }
+    public enum ItemStatus { Pending, AlreadyDone, Testing, Extracting, Done, PartialFail, Skipped, WrongPassword, Damaged, Failed, Stopped }
+
+    public static class StatusExt
+    {
+        public static bool IsFailure(this ItemStatus s) =>
+            s == ItemStatus.Failed || s == ItemStatus.WrongPassword || s == ItemStatus.Damaged || s == ItemStatus.PartialFail;
+    }
 
     public sealed class FileRename
     {
@@ -44,20 +52,44 @@ namespace ZipDown.Core
 
         public string OriginalPath => Path.Combine(Dir, OriginalName);
         public string ArchivePath => Path.Combine(Dir, NewName);
-        public string RenamedDisplay => NewName == OriginalName ? "" : NewName;
         public string SizeText => Fmt.Size(Size);
-        public string Location
+        /// <summary>完整路徑（資料夾）。</summary>
+        public string Location => Dir;
+
+        /// <summary>0 = 最外層；內層壓縮檔是子列，排在父列底下。</summary>
+        public int Depth { get; set; }
+        public PlanItem Parent { get; set; }
+        public string DisplayName => Depth == 0 ? OriginalName : new string('\u3000', Depth) + "└ " + OriginalName;
+
+        public bool IsDescendantOf(PlanItem p)
         {
-            get
-            {
-                var r = Path.GetRelativePath(Path.GetDirectoryName(RootDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) ?? RootDir, Dir);
-                return r == "." ? Dir : r;
-            }
+            for (var x = Parent; x != null; x = x.Parent) if (ReferenceEquals(x, p)) return true;
+            return false;
         }
 
         string _password;
-        /// <summary>優先試的密碼（預設 = 檔名或資料夾抓到的，可在表格修改）。</summary>
-        public string Password { get => _password; set { _password = value; On(); } }
+        bool _isResult, _resultNone;
+        /// <summary>
+        /// 解壓前：優先試的密碼（預設 = 檔名或資料夾抓到的，可在表格修改）。
+        /// 解壓後：實際用到的密碼，沒加密顯示「無」。
+        /// </summary>
+        public string Password
+        {
+            get => _isResult && _resultNone ? L.T("log.noPw") : _password;
+            set { _password = value; _isResult = false; _resultNone = false; On(); }
+        }
+
+        /// <summary>手動填（或掃描時抓到）的密碼；顯示的是解壓結果時回傳 null。</summary>
+        public string WantedPassword => _isResult ? null : _password;
+
+        /// <summary>null = 沒加密。</summary>
+        public void SetResultPassword(string pw)
+        {
+            _password = pw;
+            _isResult = true;
+            _resultNone = pw == null;
+            On(nameof(Password));
+        }
 
         ItemStatus _status;
         public ItemStatus Status { get => _status; set { _status = value; On(); On(nameof(StatusText)); } }
@@ -73,23 +105,33 @@ namespace ZipDown.Core
         public void Tick() { if (_start != null) { _elapsed = DateTime.Now - _start.Value; On(nameof(ElapsedText)); } }
         public bool IsRunning => _status == ItemStatus.Testing || _status == ItemStatus.Extracting;
 
-        public void RefreshText() { On(nameof(StatusText)); On(nameof(ElapsedText)); On(nameof(SizeText)); }
+        public void RefreshText() { On(nameof(StatusText)); On(nameof(ElapsedText)); On(nameof(SizeText)); On(nameof(Password)); }
     }
 
-    /// <summary>已解過的壓縮檔（大小|檔名），重跑時跳過。</summary>
+    /// <summary>
+    /// 已解過的壓縮檔，重跑時跳過。done_list.txt 每行「大小|檔名 TAB 密碼」，
+    /// 沒加密的密碼欄空白；舊格式（沒有 TAB）讀得到，只是不知道密碼。
+    /// </summary>
     public sealed class DoneList
     {
+        const string Unknown = "\u0001";
         readonly string _file;
-        readonly HashSet<string> _set = new HashSet<string>(StringComparer.Ordinal);
+        readonly Dictionary<string, string> _map = new Dictionary<string, string>(StringComparer.Ordinal);
         readonly object _lock = new object();
         public string FilePath => _file;
 
         public DoneList(string dir)
         {
             _file = Path.Combine(dir, "done_list.txt");
-            if (File.Exists(_file))
-                foreach (var l in File.ReadAllLines(_file, System.Text.Encoding.UTF8))
-                    if (l.Length > 0) _set.Add(l.TrimStart('﻿'));
+            if (!File.Exists(_file)) return;
+            foreach (var raw in File.ReadAllLines(_file, System.Text.Encoding.UTF8))
+            {
+                var l = raw.TrimStart('\uFEFF');
+                if (l.Length == 0) continue;
+                int tab = l.IndexOf('\t');
+                if (tab < 0) { if (!_map.ContainsKey(l)) _map[l] = Unknown; }
+                else _map[l.Substring(0, tab)] = l.Substring(tab + 1);
+            }
         }
 
         public static string Key(string path)
@@ -100,15 +142,30 @@ namespace ZipDown.Core
 
         public static string Key(long size, string name) => size + "|" + name;
 
-        public bool Contains(string key) { lock (_lock) return _set.Contains(key); }
+        public bool Contains(string key) { lock (_lock) return _map.ContainsKey(key); }
 
-        public void Mark(string path)
+        /// <summary>找得到且知道密碼 → true；pw = null 代表沒加密。</summary>
+        public bool TryGetPassword(string key, out string pw)
         {
-            var k = Key(path);
+            pw = null;
             lock (_lock)
             {
-                if (_set.Add(k))
-                    try { File.AppendAllText(_file, k + "\r\n", new System.Text.UTF8Encoding(false)); } catch { }
+                if (!_map.TryGetValue(key, out var v) || v == Unknown) return false;
+                pw = v.Length == 0 ? null : v;
+                return true;
+            }
+        }
+
+        /// <summary>pw = null 代表沒加密。</summary>
+        public void Mark(string path, string pw)
+        {
+            var k = Key(path);
+            var v = pw ?? "";
+            lock (_lock)
+            {
+                if (_map.TryGetValue(k, out var old) && old == v) return;
+                _map[k] = v;
+                try { File.AppendAllText(_file, k + "\t" + v + "\r\n", new System.Text.UTF8Encoding(false)); } catch { }
             }
         }
     }

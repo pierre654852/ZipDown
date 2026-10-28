@@ -117,6 +117,7 @@ namespace ZipDown.Core.Tests
             await u.RunAsync(items, CancellationToken.None);
 
             Assert.Equal(ItemStatus.Done, item.Status);
+            Assert.Equal("right", item.Password);                               // 顯示實際用到的密碼
             var top = Path.Combine(work, "outer");
             Assert.True(File.Exists(Path.Combine(top, "inner.7z")));            // 中間層壓縮檔保留
             Assert.True(File.Exists(Path.Combine(top, "readme.txt")));
@@ -130,7 +131,9 @@ namespace ZipDown.Core.Tests
             // 第二次跑：清單上已解過
             Directory.Delete(top, true);
             var again = new Scanner(new List<string>(), journal, done).ScanPath(work);
-            Assert.Equal(ItemStatus.AlreadyDone, Assert.Single(again).Status);
+            var a1 = Assert.Single(again);
+            Assert.Equal(ItemStatus.AlreadyDone, a1.Status);
+            Assert.Equal("right", a1.Password);                                 // 完成清單帶出密碼
             var u2 = new Unpacker(S(app), book, done, journal, eng, null);
             await u2.RunAsync(again, CancellationToken.None);
             Assert.Equal(0, u2.Ok);
@@ -155,7 +158,7 @@ namespace ZipDown.Core.Tests
             var items = new Scanner(null).ScanPath(t.P("work"));
             var u = new Unpacker(S(app), book, new DoneList(app), new RenameJournal(app), eng, null);
             await u.RunAsync(items, CancellationToken.None);
-            Assert.Equal(ItemStatus.Failed, items[0].Status);
+            Assert.Equal(ItemStatus.WrongPassword, items[0].Status);
             Assert.False(Directory.Exists(t.P("work", "x")));
             Assert.Equal(3, eng.Tested.Count);   // 假密碼 + a + b
         }
@@ -176,6 +179,80 @@ namespace ZipDown.Core.Tests
             Assert.Equal(ItemStatus.Done, items[0].Status);
             Assert.Equal(new[] { "y.zip:" + Unpacker.NoPasswordProbe, "y.zip:abc" }, eng.Tested);
             Assert.Contains("abc", book.Passwords);
+        }
+
+        [Fact]
+        public async Task Damaged_IsNotWrongPassword()
+        {
+            using var t = new TempDir();
+            var app = t.P("app"); Directory.CreateDirectory(app);
+            t.Write(Path.Combine("work", "z.zip"), FakeZip());
+            var eng = new FakeEngine();
+            eng.Damaged.Add("z.zip");
+            var items = new Scanner(null).ScanPath(t.P("work"));
+            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null);
+            await u.RunAsync(items, CancellationToken.None);
+            Assert.Equal(ItemStatus.Damaged, items[0].Status);
+        }
+
+        [Fact]
+        public async Task InnerFailure_ParentPartlyFailed_ChildRowsReported()
+        {
+            using var t = new TempDir();
+            var app = t.P("app"); Directory.CreateDirectory(app);
+            t.Write(Path.Combine("work", "outer.7z"), Fake7z());
+            var eng = new FakeEngine();
+            eng.Contents["outer.7z"] = new() { ["a.7z"] = Fake7z(), ["b.zip"] = FakeZip() };
+            eng.Passwords["b.zip"] = "nope";
+            var items = new Scanner(null).ScanPath(t.P("work"));
+            var children = new List<PlanItem>();
+            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null)
+            {
+                ChildAdded = (parent, child) => children.Add(child),
+            };
+            await u.RunAsync(items, CancellationToken.None);
+
+            Assert.Equal(ItemStatus.PartialFail, items[0].Status);
+            Assert.Equal(2, children.Count);
+            Assert.All(children, c => { Assert.Same(items[0], c.Parent); Assert.Equal(1, c.Depth); });
+            Assert.Equal(ItemStatus.Done, children.Single(c => c.OriginalName == "a.7z").Status);
+            Assert.Equal(ItemStatus.WrongPassword, children.Single(c => c.OriginalName == "b.zip").Status);
+            Assert.Equal("\u3000└ a.7z", children[0].DisplayName);
+        }
+
+        [Fact]
+        public async Task NothingToDo_WhenAllDone()
+        {
+            using var t = new TempDir();
+            var app = t.P("app"); Directory.CreateDirectory(app);
+            var item = new PlanItem { Dir = t.Path, RootDir = t.Path, OriginalName = "x.zip", NewName = "x.zip", Status = ItemStatus.Done };
+            var eng = new FakeEngine();
+            var u = new Unpacker(S(app), new PasswordBook(app), new DoneList(app), new RenameJournal(app), eng, null);
+            await u.RunAsync(new[] { item }, CancellationToken.None);
+            Assert.Empty(eng.Tested);
+        }
+    }
+
+    public class DoneListTests
+    {
+        [Fact]
+        public void RemembersPassword_AndReadsOldFormat()
+        {
+            using var t = new TempDir();
+            File.WriteAllText(t.P("done_list.txt"), "10|old.zip\r\n");
+            var a = t.Write("a.zip", new byte[5]);
+            var b = t.Write("b.zip", new byte[6]);
+            var d = new DoneList(t.Path);
+            d.Mark(a, "pw1");
+            d.Mark(b, null);
+
+            var again = new DoneList(t.Path);
+            Assert.True(again.Contains("10|old.zip"));
+            Assert.False(again.TryGetPassword("10|old.zip", out _));
+            Assert.True(again.TryGetPassword(DoneList.Key(a), out var pa));
+            Assert.Equal("pw1", pa);
+            Assert.True(again.TryGetPassword(DoneList.Key(b), out var pb));
+            Assert.Null(pb);
         }
     }
 }

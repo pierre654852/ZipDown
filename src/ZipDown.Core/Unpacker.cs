@@ -44,10 +44,18 @@ namespace ZipDown.Core
             if (level != LogLevel.Detail) Log?.Invoke(level, msg);
         }
 
+        /// <summary>內層壓縮檔要顯示成子列：(父列, 子列)。會透過 Post 呼叫。</summary>
+        public Action<PlanItem, PlanItem> ChildAdded;
+
+        /// <summary>只處理最外層（Depth = 0）而且還沒完成的列。</summary>
+        public static List<PlanItem> Todo(IEnumerable<PlanItem> items) =>
+            items.Where(i => i.Depth == 0 && i.Status != ItemStatus.Done).ToList();
+
         public async Task RunAsync(IList<PlanItem> items, CancellationToken force)
         {
+            var todo = Todo(items);
+            if (todo.Count == 0) { Write(LogLevel.Skip, L.T("log.nothing")); return; }
             Write(LogLevel.Info, L.F("log.engine", _engine.Name, _engine.ExePath));
-            var todo = items.Where(i => i.Status != ItemStatus.Done).ToList();
             Write(LogLevel.Info, L.F("log.found", todo.Count));
             Write(LogLevel.Info, "");
             int n = 0;
@@ -59,7 +67,13 @@ namespace ZipDown.Core
                 ItemStatus final;
                 try
                 {
-                    final = await ProcessTop(item, "[" + n + "/" + todo.Count + "]", force);
+                    var arc = ApplyRenames(item);
+                    if (arc == null) { Skipped++; final = ItemStatus.Skipped; }
+                    else
+                    {
+                        var extra = new List<string> { item.WantedPassword, item.NamePassword, item.FolderPassword };
+                        final = await Expand(arc, 1, "[" + n + "/" + todo.Count + "]", null, extra, item, item.RootDir, force);
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -78,15 +92,6 @@ namespace ZipDown.Core
             Write(LogLevel.Info, "");
             Write(LogLevel.Info, L.F("log.summary", Renamed, Ok, Skipped, Failed));
             if (_logFile != null) Write(LogLevel.Info, L.F("log.logFile", _logFile));
-        }
-
-        async Task<ItemStatus> ProcessTop(PlanItem item, string tag, CancellationToken ct)
-        {
-            var arc = ApplyRenames(item);
-            if (arc == null) { Skipped++; return ItemStatus.Skipped; }
-            var extra = new List<string> { item.Password, item.NamePassword, item.FolderPassword };
-            var r = await Expand(arc, 1, tag, null, extra, item, item.RootDir, ct);
-            return r;
         }
 
         /// <summary>照計畫改名（主卷＋分卷）。回傳主卷現在的路徑；主卷改不了名就回傳 null。</summary>
@@ -136,16 +141,31 @@ namespace ZipDown.Core
             return Path.GetRelativePath(parent, path);
         }
 
+        /// <summary>
+        /// 解一個壓縮檔（row = 表格上對應的那一列），再往下解內層。
+        /// 回傳這一層的結果；內層有失敗就回傳 PartialFail。
+        /// </summary>
         async Task<ItemStatus> Expand(string arc, int depth, string tag, string topOut, IEnumerable<string> extraPw,
-                                      PlanItem item, string root, CancellationToken ct)
+                                      PlanItem row, string root, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             var rel = Rel(root, arc);
             var leaf = Path.GetFileName(arc);
             var outDir = Path.Combine(Path.GetDirectoryName(arc), NameRules.OutFolderName(leaf));
+            var key = DoneList.Key(arc);
 
-            if (Directory.Exists(outDir) || File.Exists(outDir)) { Write(LogLevel.Skip, L.F("log.skipExists", rel)); Skipped++; return ItemStatus.Skipped; }
-            if (_done.Contains(DoneList.Key(arc))) { Write(LogLevel.Skip, L.F("log.skipDone", rel)); Skipped++; return ItemStatus.Skipped; }
+            if (Directory.Exists(outDir) || File.Exists(outDir))
+            {
+                Write(LogLevel.Skip, L.F("log.skipExists", rel)); Skipped++;
+                if (_done.TryGetPassword(key, out var dp)) Post(() => row.SetResultPassword(dp));
+                return ItemStatus.Skipped;
+            }
+            if (_done.Contains(key))
+            {
+                Write(LogLevel.Skip, L.F("log.skipDone", rel)); Skipped++;
+                if (_done.TryGetPassword(key, out var dp)) Post(() => row.SetResultPassword(dp));
+                return ItemStatus.Skipped;
+            }
             topOut ??= outDir;
 
             Write(LogLevel.Info, L.F("log.processing", tag, rel, Fmt.Size(FamilySize(arc))));
@@ -156,17 +176,26 @@ namespace ZipDown.Core
                 if (!string.IsNullOrEmpty(p) && !candidates.Contains(p)) candidates.Add(p);
 
             string okPw = null;
-            Post(() => item.Status = ItemStatus.Testing);
+            int lastOtherCode = 0;
+            bool anyOther = false;
+            Post(() => row.Status = ItemStatus.Testing);
             foreach (var pw in candidates)
             {
                 ct.ThrowIfCancellationRequested();
                 int code = await _engine.TestAsync(arc, pw, ct);
                 Write(LogLevel.Detail, L.F("log.attempt", rel, pw == NoPasswordProbe ? L.T("log.noPw") : pw, code));
                 if (code == 0) { okPw = pw; break; }
+                if (!_engine.IsWrongPassword(code)) { anyOther = true; lastOtherCode = code; }
             }
-            if (okPw == null) { Write(LogLevel.Fail, L.F("log.badPw", rel)); Failed++; return ItemStatus.Failed; }
+            if (okPw == null)
+            {
+                Failed++;
+                if (anyOther) { Write(LogLevel.Fail, L.F("log.damaged", lastOtherCode, rel)); return ItemStatus.Damaged; }
+                Write(LogLevel.Fail, L.F("log.badPw", rel));
+                return ItemStatus.WrongPassword;
+            }
 
-            Post(() => item.Status = ItemStatus.Extracting);
+            Post(() => row.Status = ItemStatus.Extracting);
             Directory.CreateDirectory(outDir);
             int ec;
             try
@@ -182,20 +211,24 @@ namespace ZipDown.Core
             if (ec != 0)
             {
                 try { if (Directory.Exists(outDir) && !Directory.EnumerateFileSystemEntries(outDir).Any()) Directory.Delete(outDir); } catch { }
-                Write(LogLevel.Fail, L.F("log.extractFail", ec, rel)); Failed++; return ItemStatus.Failed;
+                Write(LogLevel.Fail, L.F("log.extractFail", ec, rel)); Failed++;
+                return _engine.IsWrongPassword(ec) ? ItemStatus.WrongPassword : ItemStatus.Damaged;
             }
 
             Ok++;
+            var used = okPw == NoPasswordProbe ? null : okPw;
+            Post(() => row.SetResultPassword(used));
             var took = Fmt.Time(sw.Elapsed);
-            if (okPw == NoPasswordProbe) Write(LogLevel.Success, L.F("log.okNoPw", rel, took));
+            if (used == null) Write(LogLevel.Success, L.F("log.okNoPw", rel, took));
             else
             {
-                Write(LogLevel.Success, L.F("log.okPw", okPw, rel, took));
-                _book.RecordSuccess(okPw);
-                if (_book.AddIfMissing(okPw)) Write(LogLevel.Info, L.F("log.pwAdded", okPw));
+                Write(LogLevel.Success, L.F("log.okPw", used, rel, took));
+                _book.RecordSuccess(used);
+                if (_book.AddIfMissing(used)) Write(LogLevel.Info, L.F("log.pwAdded", used));
             }
-            _done.Mark(arc);
+            _done.Mark(arc, used);
 
+            bool innerFailed = false;
             if (depth < _s.MaxDepth)
             {
                 var scanner = new Scanner(_s.JunkWords, _journal, null);
@@ -203,14 +236,39 @@ namespace ZipDown.Core
                 foreach (var sub in inner)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var subArc = ApplyRenames(sub);
-                    if (subArc == null) continue;
-                    var pws = new List<string> { sub.NamePassword, sub.FolderPassword, okPw == NoPasswordProbe ? null : okPw };
-                    await Expand(subArc, depth + 1, L.T("log.inner"), topOut, pws, item, root, ct);
+                    sub.Depth = depth;
+                    sub.Parent = row;
+                    sub.RootDir = root;
+                    Post(() => { ChildAdded?.Invoke(row, sub); sub.Status = ItemStatus.Testing; sub.BeginTimer(); });
+                    ItemStatus st;
+                    try
+                    {
+                        var subArc = ApplyRenames(sub);
+                        if (subArc == null) st = ItemStatus.Skipped;
+                        else
+                        {
+                            var pws = new List<string> { sub.NamePassword, sub.FolderPassword, used };
+                            st = await Expand(subArc, depth + 1, L.T("log.inner"), topOut, pws, sub, root, ct);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Post(() => { sub.Status = ItemStatus.Stopped; sub.StopTimer(); });
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Write(LogLevel.Fail, L.F("log.error", sub.OriginalName, ex.Message));
+                        Failed++;
+                        st = ItemStatus.Failed;
+                    }
+                    var final = st;
+                    Post(() => { sub.Status = final; sub.StopTimer(); });
+                    if (st.IsFailure()) innerFailed = true;
                 }
             }
             if (depth > 1 && _s.Flatten) MoveUp(outDir, topOut, root);
-            return ItemStatus.Done;
+            return innerFailed ? ItemStatus.PartialFail : ItemStatus.Done;
         }
 
         /// <summary>分卷的話把同組的大小加起來。</summary>

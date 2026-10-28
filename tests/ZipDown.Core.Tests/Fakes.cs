@@ -57,6 +57,9 @@ namespace ZipDown.Core.Tests
         public Dictionary<string, string> Passwords = new(StringComparer.OrdinalIgnoreCase);   // 檔名 → 密碼（沒列 = 沒加密）
         public Dictionary<string, Dictionary<string, byte[]>> Contents = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Tested = new();
+        public HashSet<string> Damaged = new(StringComparer.OrdinalIgnoreCase);   // 這些檔測試時回 2（損壞）
+
+        public bool IsWrongPassword(int exitCode) => exitCode == 14;
 
         bool Ok(string archive, string pw)
         {
@@ -67,6 +70,7 @@ namespace ZipDown.Core.Tests
         public Task<int> TestAsync(string archive, string password, CancellationToken ct)
         {
             Tested.Add(Path.GetFileName(archive) + ":" + password);
+            if (Damaged.Contains(Path.GetFileName(archive))) return Task.FromResult(2);
             return Task.FromResult(Ok(archive, password) ? 0 : 14);
         }
 

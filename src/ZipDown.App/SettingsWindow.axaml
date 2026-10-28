@@ -24,8 +24,16 @@
       </Grid>
 
       <TextBlock x:Name="PwLabel" Grid.Row="4" Margin="0,0,0,4" />
-      <TextBox x:Name="PwBox" Grid.Row="5" AcceptsReturn="True" TextWrapping="NoWrap"
-               VerticalContentAlignment="Top" MinHeight="120" Margin="0,0,0,10" />
+      <DockPanel Grid.Row="5" Margin="0,0,0,10">
+        <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto,Auto" Margin="0,6,0,0">
+          <TextBox x:Name="NewPwBox" />
+          <Button x:Name="AddPwBtn" Grid.Column="1" Margin="6,0,0,0" />
+          <Button x:Name="DelPwBtn" Grid.Column="2" Margin="6,0,0,0" />
+        </Grid>
+        <Border BorderThickness="1" BorderBrush="#55888888" CornerRadius="3">
+          <ListBox x:Name="PwList" SelectionMode="Multiple" MinHeight="120" />
+        </Border>
+      </DockPanel>
 
       <Grid Grid.Row="6" ColumnDefinitions="Auto,Auto" Margin="0,0,0,10">
         <TextBlock x:Name="DepthLabel" VerticalAlignment="Center" Margin="0,0,10,0" />

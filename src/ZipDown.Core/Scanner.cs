@@ -81,7 +81,15 @@ namespace ZipDown.Core
                     item.RootDir = rootDir;
                     item.FolderPassword = FolderPassword(g.Key, rootDir);
                     item.Password = item.NamePassword ?? item.FolderPassword;
-                    if (_done != null && _done.Contains(DoneList.Key(item.Size, item.NewName))) item.Status = ItemStatus.AlreadyDone;
+                    if (_done != null)
+                    {
+                        var key = DoneList.Key(Len(e.Path), item.NewName);   // 完成清單記的是主卷本身的大小
+                        if (_done.Contains(key))
+                        {
+                            item.Status = ItemStatus.AlreadyDone;
+                            if (_done.TryGetPassword(key, out var dpw)) item.SetResultPassword(dpw);
+                        }
+                    }
                     result.Add(item);
                 }
             }
