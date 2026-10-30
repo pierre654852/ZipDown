@@ -20,6 +20,11 @@
         <Button x:Name="StopBtn" Classes="tool" />
         <Button x:Name="SettingsBtn" Classes="tool" />
         <Button x:Name="AboutBtn" Classes="tool" />
+        <Border x:Name="HelpIcon" Width="26" Height="26" CornerRadius="13" Margin="8,0,0,0"
+                VerticalAlignment="Center" Background="#22888888" BorderBrush="#88888888" BorderThickness="1"
+                Cursor="Help" ToolTip.ShowDelay="150" ToolTip.Placement="BottomEdgeAlignedRight">
+          <TextBlock Text="?" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
       </WrapPanel>
     </Border>
 

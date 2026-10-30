@@ -75,7 +75,12 @@ namespace ZipDown.App
             SettingsBtn.Click += OnSettings;
             AboutBtn.Click += async (_, _) => await new AboutWindow().ShowDialog(this);
 
-            TaskGrid.DoubleTapped += (_, _) => TaskGrid.BeginEdit();
+            TaskGrid.DoubleTapped += (_, _) =>
+            {
+                // 雙擊「位置」欄 → 檔案總管選取該檔；其他欄照舊進入編輯（密碼欄）
+                if (ReferenceEquals(TaskGrid.CurrentColumn, _cDir)) { if (TaskGrid.SelectedItem is PlanItem it) ShowInExplorer(it); }
+                else TaskGrid.BeginEdit();
+            };
 
             AddHandler(DragDrop.DragOverEvent, OnDragOver);
             AddHandler(DragDrop.DropEvent, OnDrop);
@@ -177,6 +182,7 @@ namespace ZipDown.App
             StopBtn.Content = _stopPresses > 0 ? L.T("ui.forceStop") : L.T("ui.stop");
             SettingsBtn.Content = L.T("ui.settings");
             AboutBtn.Content = L.T("ui.about");
+            ToolTip.SetTip(HelpIcon, BuildHelp());
             DropHint.Text = L.T("ui.dropHint");
 
             _cOrig.Header = L.T("col.original");
@@ -202,6 +208,70 @@ namespace ZipDown.App
             StartBtn.IsEnabled = idle && _items.Count > 0;
             StopBtn.IsEnabled = _running && _stopPresses < 2;
             DropHint.IsVisible = _items.Count == 0;
+        }
+
+        // ---------------- 「？」使用說明 ----------------
+
+        /// <summary>help.text：「# 」標題、「## 」段落標題，其他每行一段（自動換行）。</summary>
+        static Control BuildHelp()
+        {
+            var panel = new StackPanel { MaxWidth = 440, Spacing = 3, Margin = new Avalonia.Thickness(4) };
+            bool first = true;
+            foreach (var raw in L.T("help.text").Split('\n'))
+            {
+                var line = raw.TrimEnd();
+                if (line.Length == 0) continue;
+                var tb = new TextBlock { TextWrapping = TextWrapping.Wrap };
+                if (line.StartsWith("## "))
+                {
+                    tb.Text = line.Substring(3);
+                    tb.FontWeight = FontWeight.SemiBold;
+                    tb.Margin = new Avalonia.Thickness(0, first ? 0 : 8, 0, 0);
+                }
+                else if (line.StartsWith("# "))
+                {
+                    tb.Text = line.Substring(2);
+                    tb.FontSize = 18;
+                    tb.FontWeight = FontWeight.Bold;
+                }
+                else
+                {
+                    tb.Text = line.StartsWith("- ") ? "• " + line.Substring(2) : line;
+                    tb.Margin = new Avalonia.Thickness(8, 0, 0, 0);
+                }
+                first = false;
+                panel.Children.Add(tb);
+            }
+            return panel;
+        }
+
+        // ---------------- 雙擊位置 → 檔案總管 ----------------
+
+        void ShowInExplorer(PlanItem it)
+        {
+            // 優先指向實際的檔案：解壓時的主卷 → 改名後 → 原檔名；都不在就開資料夾
+            var file = it.ArchiveFiles.FirstOrDefault(File.Exists)
+                       ?? new[] { it.ArchivePath, it.OriginalPath }.FirstOrDefault(File.Exists);
+            var dir = file == null && Directory.Exists(it.Dir) ? it.Dir : null;
+            if (file == null && dir == null) { AddLog(LogLevel.Fail, L.F("log.notFound", it.Dir)); return; }
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+                    psi.Arguments = file != null ? "/select,\"" + file + "\"" : "\"" + dir + "\"";
+                    System.Diagnostics.Process.Start(psi);
+                }
+                else
+                {
+                    var opener = OperatingSystem.IsMacOS() ? "open" : "xdg-open";
+                    var psi = new System.Diagnostics.ProcessStartInfo(opener) { UseShellExecute = false };
+                    if (OperatingSystem.IsMacOS() && file != null) { psi.ArgumentList.Add("-R"); psi.ArgumentList.Add(file); }
+                    else psi.ArgumentList.Add(dir ?? Path.GetDirectoryName(file));
+                    System.Diagnostics.Process.Start(psi);
+                }
+            }
+            catch (Exception ex) { AddLog(LogLevel.Fail, L.F("log.openFail", file ?? dir, ex.Message)); }
         }
 
         // ---------------- 紀錄 ----------------
